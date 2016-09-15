@@ -1,26 +1,18 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Security;
 using System.Configuration;
 using Microsoft.SharePoint.Client;
 using Microsoft.SharePoint.Client.DocumentSet;
 using System.IO;
 using System.Linq;
+using RapidCircle.SharePoint.DocumentSets;
 
 namespace DocumentSetManager
 {
     class Program
     {
-        static ClientContext cc;
-
-        private static string docFolder;
-        private static string docSetContentTypeId;
-        private static string docSetName;
-
         const string ProjectConfigFile = "project.config";
-        private static string listTitle;
-        private static string excludeFodlersContaining;
-
-        private static List dl;
 
         static void Main(string[] args)
         {
@@ -28,6 +20,14 @@ namespace DocumentSetManager
             string webUrl;
             string userName;
             SecureString password;
+            Dictionary<string, string> docsets = new Dictionary<string, string>();
+            string documentLibraryTitle;
+            string documentsFolder;
+            bool majorVersionsOnly = false;
+            string documentSetName;
+            string excludeFolders = null;
+            ClientContext cc;
+
 
             if (System.IO.File.Exists(ProjectConfigFile))
             {
@@ -41,14 +41,13 @@ namespace DocumentSetManager
 
                 webUrl = config.AppSettings.Settings["WebURL"].Value;
                 userName = config.AppSettings.Settings["UserName"].Value;
-
-                docFolder = config.AppSettings.Settings["DocumentsFolder"].Value;
-                docSetContentTypeId = config.AppSettings.Settings["DocumentSetContentID"].Value;
-                docSetName = config.AppSettings.Settings["DocumentSetName"].Value;
-                listTitle = config.AppSettings.Settings["ListTitle"].Value;
-                excludeFodlersContaining = config.AppSettings.Settings["ExcludeFoldersContaining"].Value.ToLower();
-
                 password = securePassword;
+
+                documentLibraryTitle = config.AppSettings.Settings["DocumentLibraryTitle"].Value;
+                documentsFolder = config.AppSettings.Settings["DocumentsFolder"].Value;
+                documentSetName = config.AppSettings.Settings["DocumentSetName"].Value;
+                excludeFolders = config.AppSettings.Settings["ExcludeFolders"].Value.ToLower();
+
             }
             else
             {
@@ -62,16 +61,16 @@ namespace DocumentSetManager
                 password = GetPasswordFromConsoleInput();
 
                 Console.WriteLine("Enter the title of the library containing the documents:");
-                excludeFodlersContaining = Console.ReadLine();
+                documentLibraryTitle = Console.ReadLine();
 
                 Console.WriteLine("Enter the folder that contains the documents to add the the document set:");
-                docFolder = Console.ReadLine();
-
-                Console.WriteLine("Enter the document set ID:");
-                docSetContentTypeId = Console.ReadLine();
+                documentsFolder = Console.ReadLine();
 
                 Console.WriteLine("Enter the name of the document set:");
-                docSetName = Console.ReadLine();
+                documentSetName = Console.ReadLine();
+
+                Console.WriteLine("Enter [1] to copy only Major versions or [2] for all versions:");
+                majorVersionsOnly = Console.ReadLine().Equals("1");
             }
 
             cc = new ClientContext(webUrl);
@@ -80,107 +79,23 @@ namespace DocumentSetManager
             cc.Load(cc.Web);
             cc.ExecuteQuery();
 
-            //Document Set
-            ContentType dsCt = GetDocumentSet(docSetContentTypeId);
-            //Delivery Document
-            //TODO: This needs to come from the document being added. 
-            ContentType ddCt = GetDocumentSet("0x010100617E4FF37CCCF3448B647C453333DD0500DD5195652DF7F4449F14DC04FECE3F5E");
+            //Setup Mappings.
+            string[] documentSetMapping = documentSetName.Split(',');
+            string[] folderNameMapping = documentsFolder.Split(',');
 
-            DocumentSetTemplate dst = DocumentSetTemplate.GetDocumentSetTemplate(cc, dsCt);
-            dl = cc.Web.Lists.GetByTitle(listTitle);
-            cc.Load(ddCt);
-            cc.Load(dst.DefaultDocuments);
-            cc.Load(dl.RootFolder);
-            cc.ExecuteQuery();
-
-            DeleteAllExistingDocuments(dst);
-
-            ListItemCollection documents = dl.GetItems(CreateAllFilesQuery());
-            cc.Load(documents, icol => icol.Include(i => i.File));
-            cc.Load(documents, icol => icol.Include(i => i.ContentType));
-            cc.ExecuteQuery();
-
-            foreach (ListItem li in documents)
+            for (int i = 0; i < documentSetMapping.Length; i++)
             {
-                char[] splitter = { '/' };
-                string[] path = li.File.ServerRelativeUrl.Split(splitter);
-                string folder = path[path.GetLength(0) - 2];
-
-                if (folder == dl.RootFolder.Name || folder == docFolder)
-                    folder = "";
-                else
-                {
-                    folder = folder + @"/";
-
-                    string[] exclusions = excludeFodlersContaining.Split(',');
-                    if (exclusions.Any(folder.ToLower().Contains))
-                        continue;
-                }
-
-                ClientResult<Stream> data = li.File.OpenBinaryStream();
-                cc.Load(li.File);
-                cc.ExecuteQuery();
-
-                if (data != null)
-                {
-                    string myPage = "Placeholder";
-                    MemoryStream repo = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(myPage));
-                    dst.DefaultDocuments.Add(folder + li.File.Name, ddCt.Id, repo.ToArray());
-                    dst.Update(true);
-                    cc.ExecuteQuery();
-                    repo.Close();
-
-                    MemoryStream memStream = new MemoryStream();
-                    data.Value.CopyTo(memStream);
-                    memStream.Seek(0, SeekOrigin.Begin);
-                    Microsoft.SharePoint.Client.File.SaveBinaryDirect(cc, cc.Web.ServerRelativeUrl + "/_cts/" + docSetName + "/" + li.File.Name, memStream, true);
-                    memStream.Close();
-                }
+                docsets.Add(folderNameMapping[i], documentSetMapping[i]);
             }
-            dst.Update(true);
-            cc.ExecuteQuery();
+
+            DocumentSetManagerConfiguration dsmconfig = new DocumentSetManagerConfiguration(documentLibraryTitle, docsets);
+            dsmconfig.MajorVersionsOnly = majorVersionsOnly;
+            if (excludeFolders != null) dsmconfig.ExcludedFolders = excludeFolders.Split(',').ToList();
+
+            RapidCircle.SharePoint.DocumentSets.DocumentSetManager dsm = new RapidCircle.SharePoint.DocumentSets.DocumentSetManager(cc.Web, dsmconfig);
+            dsm.Run();
+
             cc.Dispose();
-        }
-
-        private static void DeleteAllExistingDocuments(DocumentSetTemplate dst)
-        {
-            //Delete Documents.
-            string[] docs = new string[200];
-            int j = 0;
-            foreach (var document in dst.DefaultDocuments)
-            {
-                docs[j] = document.Name;
-                j++;
-            }
-
-            foreach (var document in docs)
-            {
-                if (string.IsNullOrEmpty(document)) break;
-                dst.DefaultDocuments.Remove(document);
-                dst.Update(true);
-                cc.ExecuteQuery();
-            }
-        }
-
-        public static CamlQuery CreateAllFilesQuery()
-        {
-            var qry = new CamlQuery();
-            qry.FolderServerRelativeUrl = dl.RootFolder.ServerRelativeUrl + "/" + docFolder;
-
-            qry.ViewXml = "<View Scope=\"RecursiveAll\"><Query><Where><Eq><FieldRef Name=\"FSObjType\" /><Value Type=\"Integer\">0</Value></Eq></Where></Query></View>";
-
-            return qry;
-        }
-
-        private static ContentType GetDocumentSet(string contentTypeId)
-        {
-            ContentType ct = cc.Web.ContentTypes.GetById(contentTypeId);
-            cc.ExecuteQuery();
-
-            if (ct != null)
-                return ct;
-
-            return null;
         }
 
         private static SecureString GetPasswordFromConsoleInput()
