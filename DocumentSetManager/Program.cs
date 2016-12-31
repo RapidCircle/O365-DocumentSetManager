@@ -88,6 +88,8 @@ namespace DocumentSetManager
                 docsets.Add(folderNameMapping[i], documentSetMapping[i]);
             }
 
+            majorVersionsOnly = true;
+
             DocumentSetManagerConfiguration dsmconfig = new DocumentSetManagerConfiguration(documentLibraryTitle, docsets);
             dsmconfig.MajorVersionsOnly = majorVersionsOnly;
             if (excludeFolders != null) dsmconfig.ExcludedFolders = excludeFolders.Split(',').ToList();

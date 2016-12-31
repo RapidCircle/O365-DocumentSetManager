@@ -102,6 +102,7 @@
   <ItemGroup>
     <Compile Include="DocumentSetManager.cs" />
     <Compile Include="DocumentSetManagerConfiguration.cs" />
+    <Compile Include="DocumentStream.cs" />
     <Compile Include="Extensions\ContentTypeExtensions.cs" />
     <Compile Include="Extensions\DocumentSetExtensions.cs" />
     <Compile Include="Extensions\FolderExtensions.cs" />

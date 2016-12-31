@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
@@ -25,6 +26,8 @@ namespace RapidCircle.SharePoint.DocumentSets.Extensions
                 j++;
             }
 
+            Trace.TraceInformation($"Documents for deletion from Documentset");
+
             foreach (var document in docs)
             {
                 if (string.IsNullOrEmpty(document)) break;
@@ -36,32 +39,17 @@ namespace RapidCircle.SharePoint.DocumentSets.Extensions
 
         public static void Add(this DocumentSetTemplate documentSet, ListItem documentItem, string documentSetName, string folder, ContentTypeId docId, bool majorVersionOnly)
         {
+            Trace.TraceInformation($"Adding: {documentItem.File.Name} to {documentSetName}, Document Folder: {folder}");
             var ctx = documentSet.Context;
             Uri webUrl = new Uri(ctx.Url);
 
-            Microsoft.SharePoint.Client.File documentFile = documentItem.File;
-            ctx.Load(documentFile);
-            ctx.Load(documentFile.Versions);
-            ctx.ExecuteQuery();
+            DocumentStream ds = new DocumentStream((ClientContext)ctx, documentItem);
+            MemoryStream documentStream;
 
-            ClientResult<Stream> documentStream = null;
             if (majorVersionOnly)
-            {
-                if (documentFile.Versions.Count.Equals(0)) return;
-
-                string majorVersionLabel = documentFile.MajorVersion + ".0";
-                foreach (FileVersion fileVersion in documentItem.File.Versions)
-                {
-                    if (fileVersion.VersionLabel.Equals(majorVersionLabel))
-                    {
-                        documentStream = fileVersion.OpenBinaryStream();
-                        ctx.ExecuteQuery();
-                        break;
-                    }
-                }
-            }
+                documentStream = ds.MajorVersion;
             else
-                documentStream = documentItem.File.OpenBinaryStream();
+                documentStream = ds.LatestVersion;
 
             //Use a place holder to workaround filesize limitation with the DefaultDocuments API. 
             //Place holder is inserted via the API, and then overwritten later. 
@@ -69,24 +57,19 @@ namespace RapidCircle.SharePoint.DocumentSets.Extensions
             {
                 string placeholderPage = "Placeholder";
                 MemoryStream repo = new MemoryStream(Encoding.UTF8.GetBytes(placeholderPage));
-                documentSet.DefaultDocuments.Add(folder + documentFile.Name, docId, repo.ToArray());
+                documentSet.DefaultDocuments.Add(folder + ds.FileName, docId, repo.ToArray());
                 documentSet.Update(true);
                 ctx.ExecuteQuery();
                 repo.Close();
+                Trace.TraceInformation("- Placeholder created");
 
-                MemoryStream memStream = new MemoryStream();
-                documentStream.Value.CopyTo(memStream);
-                memStream.Position = 0;
-                //File.SaveBinaryDirect((ClientContext)ctx, webUrl.AbsolutePath + "/_cts/" + documentSetName + "/" + documentItem.File.Name, memStream, true);
-                //memStream.Close();
-
-                UploadFile((ClientContext)ctx, webUrl.AbsolutePath + "/_cts/" + documentSetName, memStream, documentItem.File.Name);
-                //memStream.Close();
+                UploadFile((ClientContext)ctx, webUrl.AbsolutePath + "/_cts/" + documentSetName, documentStream, documentItem.File.Name);
             }
         }
 
         private static void UploadFile(ClientContext ctx, string folderPath, MemoryStream memStream, string fileName)
         {
+            Trace.TraceInformation("- Large file upload initiated");
             Guid uploadId = Guid.NewGuid();
             File uploadFile;
             //int blockSize = 1000;
@@ -100,22 +83,21 @@ namespace RapidCircle.SharePoint.DocumentSets.Extensions
 
             if (fileSize <= blockSize)
             {
-                // Use regular approach
-                //using (FileStream fs = new FileStream(fileName, FileMode.Open))
-                //{
-                    FileCreationInformation fileInfo = new FileCreationInformation();
-                    fileInfo.ContentStream = memStream;
-                    fileInfo.Url = fileName;
-                    fileInfo.Overwrite = true;
-                    uploadFile = uploadFolder.Files.Add(fileInfo);
-                    ctx.Load(uploadFile);
-                    ctx.ExecuteQuery();
-                    // return the file object for the uploaded file
-                    //return uploadFile;
-                //}
+                Trace.TraceInformation($"- Standard upload initiated. Filesize: {fileSize}");
+
+                FileCreationInformation fileInfo = new FileCreationInformation();
+                fileInfo.ContentStream = memStream;
+                fileInfo.Url = fileName;
+                fileInfo.Overwrite = true;
+                uploadFile = uploadFolder.Files.Add(fileInfo);
+                ctx.Load(uploadFile);
+                ctx.ExecuteQuery();
+
+                Trace.TraceInformation("- Upload Completed.");
             }
             else
             {
+                Trace.TraceInformation($"- Large file upload initiated. Filesize: {fileSize}");
 
                 ClientResult<long> bytesUploaded = null;
                 FileStream fs = null;

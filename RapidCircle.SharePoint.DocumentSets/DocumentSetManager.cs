@@ -1,6 +1,7 @@
 ﻿using Microsoft.SharePoint.Client;
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -25,6 +26,8 @@ namespace RapidCircle.SharePoint.DocumentSets
 
         public void Run()
         {
+            Trace.TraceInformation("Document Set Manager Initiated");
+
             List documentLibrary = DocumentWeb.Lists.GetByTitle(Config.DocumentLibrary);
             Folder rootFolder = documentLibrary.RootFolder;
             Ctx.Load(documentLibrary);
@@ -33,6 +36,8 @@ namespace RapidCircle.SharePoint.DocumentSets
 
             foreach (KeyValuePair<string, string> folderToDocumentMap in Config.FolderToDocumentSetMapping)
             {
+                Trace.TraceInformation($"Mapping: {folderToDocumentMap.Key} to {folderToDocumentMap.Value}. Major Versions Only: {Config.MajorVersionsOnly}");
+
                 ContentType documentSetCt = DocumentWeb.ContentTypes.GetByName(folderToDocumentMap.Value);
                 Folder folder = rootFolder.Folders.GetByName(folderToDocumentMap.Key);
                 DocumentSetTemplate dst = DocumentSetTemplate.GetDocumentSetTemplate(Ctx, documentSetCt);
@@ -41,6 +46,7 @@ namespace RapidCircle.SharePoint.DocumentSets
                 Ctx.Load(dst, i => i.DefaultDocuments);
                 Ctx.ExecuteQuery();
 
+                Trace.TraceInformation($"Deleting existing documents from the {folderToDocumentMap.Value}");
                 dst.Clear();
 
                 CamlQuery cq = CreateAllFilesQuery();
@@ -52,15 +58,23 @@ namespace RapidCircle.SharePoint.DocumentSets
                 Ctx.Load(documents, icol => icol.Include(i => i.ContentType.Id));
                 Ctx.ExecuteQuery();
 
+                Trace.TraceInformation($"Returned {documents.Count} files for processing");
+
+                int count = 0;
                 foreach (ListItem document in documents)
                 {
+                    count++;
                     ContentType docCt = DocumentWeb.ContentTypes.GetByName(document.ContentType.Name);
                     Ctx.ExecuteQuery();
-
+                    
                     string contentTypeFolder = ContentTypeFolder(document, rootFolder, folder);
                     if (Config.ExcludedFolders.Contains(contentTypeFolder.TrimEnd('/'), StringComparer.CurrentCultureIgnoreCase))
+                    {
+                        Trace.TraceInformation($"{document.File.Name} not proceesed due to ExcludedFolder rule: {contentTypeFolder.TrimEnd('/')}");
                         continue;
+                    }
 
+                    Trace.TraceInformation($"Adding document {count}: {document.File.Name}");
                     dst.Add(document, folderToDocumentMap.Value, contentTypeFolder, docCt.Id, Config.MajorVersionsOnly);
                     dst.Update(true);
                     Ctx.ExecuteQuery();
